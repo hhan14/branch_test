@@ -1,0 +1,818 @@
+---
+title: "HS614 Final Project"
+author: "Helen Han"
+date: "May 10th, 2018"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  word_document: default
+---
+*Packages Required*
+```{r, include = FALSE, echo=FALSE}
+library(caret)
+library(klaR)
+library(class)
+library(randomForest)
+library(mlbench)
+library(Hmisc)
+library(caTools)
+library(NbClust)
+library(ggplot2)
+library(ggpubr)
+library(data.table)
+library(arm)
+library(cluster)
+library(dplyr)
+library(scales)
+library(e1071)
+library(ROCR)
+library(citr)
+library(factoextra)
+library(FunCluster)
+library(tidyverse)
+library(dendextend)
+library(ISLR)
+library(RColorBrewer)
+```
+
+
+**Introduction/Summary**
+This document is to show and describe each step of analysis taken of the ¡°Post-Operative Patient Data Set¡± for the final project of the HS614. The goal of analysis of data set is to predict whether a patient after surgery will be sent to the hospital floor or sent their home1[https://archive.ics.uci.edu/ml/datasets/Post-Operative+Patient] through solid approaches and proper processes of analysis. 
+ 
+
+**Data Exploration**
+
+Part one. Data Cleaning
+
+0. Set Seed
+
+I set the seed only this initial occasion instead of every time when I run each algorithm, which picks up the same random subset of data. In this way, I can improve fitting my model by comparing results when I run the same algorithms multiple times. 
+```{r}
+set.seed(3)
+```
+
+1. Import the Data set
+
+While importing and viewing data set, the following steps were taken.
+
+- Check out the types of values for each feature along with the levels of them.
+
+- Examine rows and columns to check missing values and/or inappropriate values.
+
+The data consisted of 9 features with their current type of factors. 8 of those features were label values and only one "V8" column contained numbers.
+```{r}
+mydata <- read.csv("post-operative.csv", header = FALSE)
+#View(mydata)
+summary(mydata)
+str(mydata)
+```
+
+2. Rename Columns and Set Responsive Variable
+
+I renamed columns to correspond to the data attributes, and set "Discharge_Decision" column as the responsive feature.
+```{r}
+names(mydata) <- c("Internal_Temp", "Surface_Temp", "Oxygen_Saturation", 
+                   "Blood_Pressure", "Suf_Temp_Stability", "Internal_Temp_Stability", 
+                   "Blood_Pressure_Stability", "Comfort", "Discharge_Decision")
+summary(mydata$Discharge_Decision)
+```
+
+3. Clean Data
+
+I took the following steps to clean the data set:
+
+- Convert value "?" to "NA" and drop NA instances in "Comfort" feature.
+
+- Overwrite class "A " with "A" in "Discharge_Decision" feature.
+
+- Remove levels in features that do not occur.
+
+- Convert type of values of "Comfort" feature from ¡®factor¡¯ to ¡®numeric¡¯.
+```{r}
+mydata[mydata == "?"] <- NA
+mydata[mydata == "A "] <- "A"
+mydata1 <- na.omit(mydata)
+mydata1$Discharge_Decision <- factor(mydata1$Discharge_Decision)
+mydata1$Comfort <- as.numeric(as.character(mydata1$Comfort))
+str(mydata1)
+summary(mydata1$Discharge_Decision)
+```
+Based on the description of the data set, 1[https://archive.ics.uci.edu/ml/datasets/Post-Operative+Patient], all of the variables are categorical except for the ones in 'V8' column. While the column is ¡®quantitative¡¯ as it has order and scale, it also can be practically 'categorical' as it is the data collected from patients on their perceived comfort at discharge.
+One patien`ts rate of 15 may not the same with another patient`s. In conclusion, the results of each step showed more comparable when the ¡°Comfort¡± was reserved as ¡®quantitative¡¯ and ¡®categorical¡¯. So I converted the column as numeric.
+
+4. Data Manipulation
+
+This is the point that I had to make a decision on the data set. After cleaning data, I realized that there is only one instance of "I" which means the patient to be sent to ¡°Intensive Care Unit¡± from 87 observations out of three classes of responsible variable. When I simulated to compare two cases of with and without "I", given the number of instances of the other two classes, the imbalance can possibly distort the analysis. Also, there would be more technically applicable classification options such as 'Logistic Regression' if I keep two classes in the outcome feature. At this point, I estimated to drop the "I" instance or overwrite it with "A" which means the patient to be admitted to hospital. I chose to overwrite it as the class "I" can be in the category of "A" among those classes, and I wanted to secure one more observation for analysis from the relatively small data set.
+- Convert class "I" to "A" in responsive variable, "Discharge_Decision"
+```{r}
+# Convert "I" to "A"
+mydata1[mydata1 == "I"] <- "A"
+mydata1$Discharge_Decision <- factor(mydata1$Discharge_Decision)
+# View Cleaned Data
+summary(mydata1)
+```
+
+5. View Cleaned Data
+```{r}
+summary(mydata1)
+```
+
+Part two. Plot Data
+
+1. Bar plot
+
+I came up with bar chart to present the current data status of outcome feature. This delivers intuitive snapshot of the observed variables in the feature. From the chart, I learned the current proportion of patients admitted to hospital after surgery and sent home in the data set.
+```{r}
+counts <- table(mydata1$Discharge_Decision)
+barplot(counts, col = c("yellow", "red", "green"),
+        main = "Frequency of Discharge Decisions",
+        xlab = "Discharge Decision",
+        ylab = "Frequency",
+        ylim = c(0,70),
+        legend.text = c("A = Admit", "S = Stable"))
+```
+
+2. Geom plot 
+
+The bar chart is good to understand how variables are spread as a category of classes in each feature. However, it doesn`t show relationships between features. In this regard, geom plot is useful to understand relationships between certain features. Through the chart below, I was able to understand how patients` blood pressure level affected the discharge decision.
+```{r}
+ggplot(mydata1, 
+       aes(x = Blood_Pressure, fill = Discharge_Decision)) +
+  geom_bar(position = "fill") +
+  ggtitle("Patient Blood Pressure Affects Discharge Decision") +
+  xlab("Patient`s Blood_Pressure") +
+  ylab("Proportion of Temperature Group") +
+  scale_fill_discrete(name = "Title", labels = c("A", "S"))
+#how core affects discharge decision
+```
+
+
+**DATA ENGINEERING**
+
+Part ¥°. Pre-Processing with Feature Extraction (Algorithm)
+
+1. Create Dummy Variables
+
+For machine learning, there is constraint to fit a model with categorical data with some exceptions such as ¡°Decision Tree¡±. 2[https://machinelearningmastery.com/why-one-hot-encode-data-in-machine-learning/] So I needed to convert all the ¡®categorical¡¯ variables to numeric before I split the data set into train and test. While I created dummy variables, I singled out the outcome feature, Discharge_Decision¡±.
+```{r}
+dummy <- dummyVars("~.", data = subset(mydata1,select=-c(Discharge_Decision)))
+mydata2 <- data.frame(predict(dummy, newdata = subset(mydata1,select=-c(Discharge_Decision))))
+mydata2$Discharge_Decision <- mydata1$Discharge_Decision
+str(mydata2)
+```
+
+2. Split Data
+
+- Split the data set into train and test with 75% vs 25% ratio.
+
+- Divided features of test data from outcome feature in advance for applying prediction.
+```{r}
+trainIndex <- createDataPartition(mydata2$Discharge_Decision, p = .75, list = FALSE, times = 1)
+train <- mydata2[trainIndex, ]
+test <- mydata2[-trainIndex, ]
+#trainIndex
+dim(train); dim(test);
+test_x <- subset(test,select=-c(Discharge_Decision))
+test_y <- subset(test,select=c(Discharge_Decision))
+```
+
+3. Scale Train Data 
+
+Before applying training data set to algorithms, the range of variables should be standardized to make them comparable. As the ¡°Comfort¡± feature only has different range of variables, I scaled it in the range from 0 to 1 as the other variables.
+```{r}
+train_sc <- train
+train_sc$Comfort <- rescale(train$Comfort, to=c(0,1))
+str(train_sc)
+```
+
+4. PCA
+
+Main reason that I ran PCA was to look at how the train data set was spread visually after completing pre-processing of data. My guess was the PCA would present less meaningful result as the binary data set, which is often quite sparse, used to perform PCA was from dummy variables. And as I expected, it was hard to find any pattern on the PCA result. However, out of the outcome, I was able to get a sense that the data set neither is linear, nor has outliers. Based on this, I estimated that Support Vector Machin (SVM) or K-Nearest Neighbors (KNN) would perform better than Logistic Regression for classification algorithm of the data set.
+```{r pcatest1}
+pca1 <- prcomp(subset(train_sc, select=-c(Discharge_Decision)), center=TRUE, scale. = FALSE)
+plot(pca1$x[,1:2], col=train$Discharge_Decision)
+pca1
+#Print proportion of variance
+plot(pca1, type = "l")
+summary(pca1)
+
+pca_pred <- predict(pca1, train_sc)
+```
+
+1. Feature Selection
+
+a. Recursive Feature Elimination (RFE)
+
+I basically selected Recursive Feature Elimination with Random Forest function as the data was based on categorical. And I used k-fold Cross Validation for resampling method to keep the variance low. 
+To get the optimal result, I changed the number of fold from 10 to 100, and the accuracy improved as the number put went up at a certain point until 50. And the Kappa value, which is regarded as rsquared value on regression1[https://www.rdocumentation.org/packages/caret/versions/6.0-79/topics/rfe], started showing zero (0.0000) from number 25. However, when I ran it again with number 100, the figure went down around the same level with 15. Therefore, I chose to keep the number to 50 for the best result.
+
+n = 10: 0.7287
+
+n = 15: 0.7300
+
+n = 20: 0.7333
+
+n = 25: 0.7533 KAPPA: 0.0000
+
+n = 50: 0.8125 KAPPA: 0.0000
+
+n = 100: 0. 7273 KAPPA: 0.0000
+
+For the whole trail, ¡°Surface_Tem.high¡± had been the top variable.
+```{r}
+control <- rfeControl(functions=rfFuncs, method="cv", number=50)
+results <- rfe(train_sc[,1:20], train_sc[,21], sizes=c(1:20), rfeControl=control)
+# summarize the results
+print(results)
+# list the chosen features
+predictors(results)
+# plot the results
+plot(results, type=c("g", "o"))
+```
+
+b. Random Forest
+
+I also applied Random Forest using randomForest function to see important features in ranking of Mean Decrease Accuracy and Mean Decrease Gini. After running the Random Forest 10 times in a row, and ¡°Surface_Temp¡±, ¡°Comfort¡±, ¡°Blood_Pressure¡± were ranked the highest most often.
+```{r}
+train.rf <- randomForest(train_sc$Discharge_Decision ~., train_sc, importance = TRUE) 
+importance(train.rf)
+varImpPlot(train.rf)
+```
+In summary, from comparing the results, I confirmed that ¡°Surface_Temp.high¡± is the most important feature, and ¡°Comfort¡± and ¡°Blood_Pressure¡± are in the most important feature category.
+
+
+**DATA CLUSTERING**
+
+1. K-means Clustering and Metrics
+
+I assume that K-means clustering algorithm on the data set may not bring sensible result as the variables are binary. The algorithm computes the mean and new mean between each cluster, however, for binary or categorical data, the standard mean may not be meaningful.
+
+The reason I initially specified k with 2 is that I predict two classes.
+- Performs K-means clustering with k = 2
+```{r}
+train_clust <- subset(train_sc, select=-c(Discharge_Decision))
+# Performs K-means clustering with k = 2 
+k_mean <- kmeans(train_clust, 2, iter.max = 10, nstart = 10)
+# Cluster number for each of the observations
+k_mean$cluster
+# Cluster size
+k_mean$size
+# Cluster means
+k_mean$centers
+# Plot K-means
+fviz_cluster(k_mean, data = train_clust)
+str(k_mean)
+summary(k_mean)
+k_mean
+k_mean$withinss
+k_mean$tot.withinss
+k_mean$betweenss
+k_mean$totss
+k_mean$betweenss/k_mean$totss
+```
+As expected, the result showed high variance within the clusters and low variance between the clusters: The ¡°Within cluster sum of squares by cluster is high with the value of 99.79 and 87.21 respectively, meaning less similarity within the groups. Also, the ratio of ¡°Between cluster sum of squares¡± over ¡°Total cluster sum of squares¡±, (between_SS / total_SS), is very low as 16.3%. And this means there is homogeneity between clusters.
+
+This could be 1. for the small size of data set, 2. for the improper number of k, or 3. for the characteristic of the data set with dummy variables. Also, data was less clearly clustered by being overlapped.\
+¤ýSum of squares within each cluster: 99.78571, 87.20968
+
+¤ýTotal sum of squares within cluster: 186.9954
+
+¤ýTotal sum of squares between cluster: 36.33794
+
+¤ýTotal sum of squares: 223.3333
+
+¤ýTotal sum of squares between cluster / Total sum of squares: 0.1627072
+
+a. "Within sum of square (WSS)" method: Elbow method
+
+To improve the result by providing optimal values of k, I used WSS method, which gives the smallest value of k that still has a low SSE. by calculating the sum of squared errors (SSE). 
+
+- Use the "Within sum of square (WSS)" metrics. 
+```{r}
+# Compute total within-cluster sum of square 
+wss <- function(k) {kmeans(train_clust, k, nstart = 10 )$tot.withinss}
+# Set range of k values: 1 to 15
+km_values <- 1:15
+# Extract wss for 1 to 15 clusters
+wss_values <- map_dbl(km_values, wss)
+# Plot wss_values
+plot(km_values, wss_values,
+       type="b", pch = 19, frame = FALSE, 
+       xlab="Number of clusters K",
+       ylab="Total within-clusters sum of squares")
+```
+
+The elbow method showed 2 and 9 as k value. As the result when k = 2 was not positive, I picked 9 as optimal number.
+
+- Performs K-means clustering with k = 9
+```{r}
+# Performs K-means clustering with k = 9
+k_mean <- kmeans(train_clust, 9, nstart = 1)
+k_mean$withinss
+k_mean$tot.withinss
+k_mean$betweenss
+k_mean$totss
+k_mean$betweenss/k_mean$totss
+
+fviz_cluster(k_mean, data = train_clust)
+```
+The result improved significantly: ¡°The sum of squares within each cluster¡± and ¡°The average distance of each cluster¡± decreased by more than 30%, and ¡°The total sum of squares between cluster¡± increased by 30% as well. As a result, the final ratio went up to 50.1%.
+
+¤ýSum of squares within each cluster: 2.68750, 11.87500, 13.00000, 11.33333, 20.27778, 10.54167, 7.00000, 8.71875, 24.06667
+
+¤ýTotal sum of squares within cluster: 109.5007
+
+¤ýTotal sum of squares between cluster: 113.8326
+
+¤ýTotal sum of squares between cluster / Total sum of squares: 0.5096984
+
+- Compare K-means with multiple nstart trials
+
+The final ratio was further improved from 50.96% to 54.12% when the value of nstart was large. Therefore, I computed K-means clustering with a large value of nstart such as 25 in order to get a more stable result.
+```{r}
+# K-means with nstart = 1
+k_mean <- kmeans(train_clust, 9, nstart = 1)
+k_mean$betweenss/k_mean$totss
+fviz_cluster(k_mean, data = train_clust)
+
+# K-means with nstart = 25
+k_mean <- kmeans(train_clust, 9, nstart = 25)
+k_mean$betweenss/k_mean$totss
+fviz_cluster(k_mean, data = train_clust)
+```
+
+b. Silhouette method
+
+Silhouette approach measures the average silhouette of observations for different values of k.
+It is more qualitative clustering to see how well each object lies within its cluster. A high average silhouette width indicates a good clustering.4[https://uc-r.github.io/kmeans_clustering]
+
+- Use the Silhouette metrics
+```{r}
+# Compute average silhouette for k clusters
+avg_sil <- function(k) {
+  k_mean <- kmeans(train_clust, centers = k, nstart = 25)
+  ss <- silhouette(k_mean$cluster, dist(train_clust))
+  mean(ss[, 3])}
+# Set range of k values: 2 to 15
+ks_values <- 2:15
+# Extract avg silhouette for 2-15 clusters
+avg_sil_values <- map_dbl(ks_values, avg_sil)
+# Plot the result
+plot(ks_values, avg_sil_values,
+       type = "b", pch = 19, frame = FALSE, 
+       xlab = "Number of clusters K",
+       ylab = "Average Silhouettes")
+```
+
+The Silhouette method showed 2 and 4 for k values. 
+
+- Performs K-means clustering with k = 4
+```{r}
+# Performs K-means clustering with k = 4
+k_mean <- kmeans(train_clust, 4, nstart = 25)
+k_mean$withinss
+k_mean$tot.withinss
+k_mean$betweenss
+k_mean$totss
+k_mean$betweenss/k_mean$totss
+# Plot the result
+fviz_cluster(k_mean, data = train_clust)
+```
+The metric presented lower score with 32.86%, which means the clustering is low quality. I think it is mainly the data set itself is sparse as there is less differentiation among dummy variables, and that made the clusters overlapped. 
+
+¤ýSum of squares within each cluster: 49.03750, 33.73214, 32.06667, 35.08824
+
+¤ýTotal sum of squares within cluster: 149.9245
+
+¤ýTotal sum of squares between cluster: 73.40879
+
+¤ýTotal sum of squares between cluster / Total sum of squares: 0. 0.3286961
+
+c. Gap Statistic Method
+
+The Gap Statistic compares the total intracluster variation for different values of k with their expected values under null reference distribution of the data.4[https://uc-r.github.io/kmeans_clustering]
+```{r}
+# Perform gap stat
+gap_stat <- clusGap(train_clust, FUN = kmeans, nstart = 25, K.max = 10, B = 50)
+# Print the result
+print(gap_stat, method = "firstmax")
+# Plot the result
+fviz_gap_stat(gap_stat)
+```
+The Gap Statistic showed 9 for k values which was suggested by WSS along with 2.
+
+In conclusion, I will confirm the optimal value for k is 9 as two of the methods out of three brought the same value with the best result of 54.12%.
+
+¤ýWSS: 2 and 9
+
+¤ýSilhouette: 2 and 4
+
+¤ýGap Statistic: 9
+
+In addition, I will choose the Gap Statistic approach as the best option for K-means clustering. Even though WSS provide the same values, it came up with two values of 2 and 9. Considered K-means clustering is sensitive to the initial input of k value and can bring different results if the order of data input is changed. This means applying the optimal value at the first trial is critical to get the best result. WSS brought 50% chance to choose the optimal value and Silhouette didn`t provide the right value. Therefore, the Gap Statistic method is recommended as the best option for K-means clustering of the data set.
+
+2. Hierarchical Clustering
+
+Hierarchical clustering is an alternative approach to K-means clustering. Main difference is that it does not require to pre-specify the number of clusters. Also, hierarchical clustering results in a dendrogram, a tree-based representation of the observations. 4[https://uc-r.github.io/kmeans_clustering]
+
+a. Determining Distance Method
+
+I used and compared ¡°Euclidean¡± and ¡°Manhattan¡± metrics to get better distance for Hierarchical clustering. Also, I applied all four linkage methods of "average", "single", "complete", and "ward" with each of matric to choose the best option.
+
+ i. Euclidean Method
+ 
+- Compute distance
+
+- Calculate coefficient scores of all four linkage methods
+
+- Plot the dendrogram
+```{r}
+# Dissimilarity matrix as "Euclidean"
+hc_eucld <- dist(train_clust, method = "euclidean")
+# Hierarchical clustering methods to assess
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")
+# Compute coefficient
+ac <- function(x) {agnes(hc_eucld, method = x)$ac}
+# Print method and coefficient
+map_dbl(m, ac)
+#Plot dendrogram
+hc_ecld_wrd <- agnes(hc_eucld, method = "ward")
+pltree(hc_ecld_wrd, cex = 0.6, hang = -1, main = "Dendrogram with Euclidean + ward") 
+
+```
+¡°Ward¡± method showed the highest ecoefficiency with 0.8564. 
+
+ ii. Manhattan Method
+```{r}
+# Dissimilarity matrix as "Manhattan"
+hc_mht <- dist(train_clust, method = "manhattan")
+# Compute coefficient
+ac <- function(x) {agnes(hc_mht, method = x)$ac}
+# Print method and coefficient
+map_dbl(m, ac)
+#Plot dendrogram
+hc_mht_wrd <- agnes(hc_mht, method = "ward")
+pltree(hc_mht_wrd, cex = 0.6, hang = -1, main = "Dendrogram with Manhattan + ward") 
+```
+I decided Manhattan metric over Euclidean as Manhattan provided higher ecoefficiency over the four methods. And I also picked ward linkage method which presented the best result as well with 0.9304. 
+
+b. Determining Optimal Cluster
+
+I executed the same approaches as I did for K-means clustering to get the optimal cluster for Hierarchical clustering.
+```{r}
+fviz_nbclust(train_clust, FUN = hcut, method = "wss")
+fviz_nbclust(train_clust, FUN = hcut, method = "silhouette")
+fviz_nbclust(train_clust, FUN = hcut, method = "gap_stat")
+```
+
+I selected optimal number of cluster as 3 for WSS method, 2 for Silhouette, and 9 for Gap Statistic. 
+```{r}
+# Assign for cut tree with Mantahhan + Ward's method
+hc_cut <- hclust(hc_mht, method = "ward.D2" )
+#Cut tree into 3 groups from optimal number of WSS
+sub_grp_wss <- cutree(hc_cut, k = 3)
+# View each cluster
+table(sub_grp_wss)
+# Plot cluster
+plot(hc_cut, cex = 0.6)
+rect.hclust(hc_cut, k = 3, border = 2:5)
+```
+
+```{r}
+#Cut tree into 3 groups from optimal number of Silhouette
+sub_grp_sil <- cutree(hc_cut, k = 2)
+# View each cluster
+table(sub_grp_sil)
+# Plot cluster
+plot(hc_cut, cex = 0.6)
+rect.hclust(hc_cut, k = 2, border = 2:5)
+```
+
+```{r}
+#Cut tree into 3 groups from optimal number of Gap Statistic
+sub_grp_gap <- cutree(hc_cut, k = 9)
+# View each cluster
+table(sub_grp_gap)
+# Plot cluster
+plot(hc_cut, cex = 0.6)
+rect.hclust(hc_cut, k = 9, border = 2:5)
+```
+I finally determined Gap Statistic method as the best option for Hierarchical clustering as I did for K-means clustering. Based on the different approach, the Gap Statistic method brought the same value, which makes sense as it is the same data set. Furthermore, even though all of three methods presented imbalanced result on the dendrogram comparison, Gap Statistic showed relatively balanced cluster groups than WSS and Silhouette method.
+
+In regard with two approaches of K-means and Hierarchical clustering, I would use both at the same time. K-means clustering is useful to show how many clusters I want to look at as I indicated and to present whether the cluster is cleanly clustered or overlapped. And Hierarchical method let me analyze dendrogram and split it at a height to figure out how many clusters and what belongs to each cluster with ecoefficiency, which is good to understand the balance among the clusters. 
+
+
+**DATA CLASSIFICATION**
+
+1. Create a histogram of each feature
+
+a. Internal Temperature
+```{r}
+g <- ggplot(mydata1, aes(x = ordered(Internal_Temp,levels = c("low", "mid", "high")), fill = Discharge_Decision))
+g + geom_histogram(stat = "count", position = "stack") + 
+  ggtitle("Discharge Decision based on Internal Core Temperature") +
+  labs(x = "Temperature Category (Degrees measured in Celsius)", y = "Frequency", caption = "low = < 36", "mid = >= 36 and <= 37", "high = >37") +
+  scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+
+b. Surface Temperature
+```{r}
+g <- ggplot(mydata1, aes(x = ordered(Surface_Temp,levels = c("low", "mid", "high")), fill = Discharge_Decision))
+g + geom_histogram(stat = "count", position = "stack") + 
+  ggtitle("Discharge Decision based on Surface Temperature of patient") +
+  labs(x = "Temperature Category (Degrees measured in Celsius)", y = "Frequency") +
+  scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+c. Oxygen Saturation
+```{r}
+g <- ggplot(mydata1, aes(x = ordered(Oxygen_Saturation,levels = c("good", "excellent")), fill = Discharge_Decision))
+g + geom_histogram(stat = "count", position = "stack") + 
+  ggtitle("Discharge Decision based on Oxygen Saturation Level of patient") +
+  labs(x = "Oxygen Saturation Level Category", y = "Frequency") +
+  scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+
+d. Blood Pressure
+```{r}
+g <- ggplot(mydata1, aes(x = ordered(Blood_Pressure,levels = c("low", "mid", "high")), fill = Discharge_Decision))
+g + geom_histogram(stat = "count", position = "stack") + 
+  ggtitle("Discharge Decision based on Blood Pressure of patient") +
+  labs(x = "Blood Pressure (Degrees measured in Category)", y = "Frequency") +
+  scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+
+e. Surface Temperature Stability
+```{r}
+g <- ggplot(mydata1, aes(x = ordered(Suf_Temp_Stability,levels = c("unstable", "stable")), fill = Discharge_Decision))
+g + geom_histogram(stat = "count", position = "stack") + 
+  ggtitle("Discharge Decision based on Surface Temperature Stability of patient") +
+  labs(x = "Surface Temperature Stability Category", y = "Frequency") +
+  scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+
+f. Internal Temperature Stability
+```{r}
+g <- ggplot(mydata1, aes(x = ordered(Internal_Temp_Stability,levels = c("unstable", "mod-stable", "stable")), fill = Discharge_Decision))
+g + geom_histogram(stat = "count", position = "stack") + 
+  ggtitle("Discharge Decision based on Internal Temperature Stability") +
+  labs(x = "Internal Temperature Stability Category", y = "Frequency") +
+  scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+
+g. Blood Pressure Stability
+```{r}
+g <- ggplot(mydata1, aes(x = ordered(Blood_Pressure_Stability,levels = c("unstable", "stable")), fill = Discharge_Decision))
+g + geom_histogram(stat = "count", position = "stack") + 
+  ggtitle("Discharge Decision based on Blood Pressure Stability of patient") +
+  labs(x = "Blood Pressure Stability Category", y = "Frequency") +
+  scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+
+h. Comfort of patients at discharge
+```{r}
+g <- ggplot(mydata1, aes(x=Comfort,fill=Discharge_Decision))
+g + geom_histogram(binwidth=5) + 
+ ggtitle("Discharge Decision based on Comfort of patient at discharge") +
+ labs(x = "Comfort (Measured by Numeric Values)", y = "Frequency") +
+ scale_fill_discrete(name = "Discharge Decision", labels = c("A = Admit", "S = Home"))
+```
+
+2. Classification Algorithm
+
+a. Logistic Regression
+
+From the result of PCA and K-means clustering, I conjecture that Logistic Regression would not be a better option for classification of the data set. However, I wanted to execute Logistic Regression and to evaluate the performance with other classification methods that I learned in the classroom. So, I fit a Logistic Regression model in order to predict the probability of a patient after surgery to get admitted to hospital or to be sent home. 
+
+- Perform simple Logistic Regression model algorithm
+
+- Analyze parameters that I used
+
+- Set prediction with train and test 
+
+- Compute metrics
+```{r}
+# Execute simple GLM model
+log_model <- glm(Discharge_Decision ~., family=binomial, data = train_sc)
+# View results
+summary(log_model)
+# Get ecoefficiency
+exp(coef(log_model))
+# Plot logistic model
+#plot(log_model) 
+```
+I did not use any particular set of parameters to enhance the performance of Logistic Regression but applied ¡®glm function¡¯. As I stated, I preferred to identify the best option for analyzing my data through various approaches first. Once I select the optimal method, I will improve it by adapting set of parameters.
+
+The values I focused on for Logistic Regression model was ¡°Akaike Information Criteria (AIC)¡± which is a penalized likelihood value of fitting the model5[https://www.analyticsvidhya.com/blog/2015/11/beginners-guide-on-logistic-regression-in-r/]. The value of the model was 99.014 which is considered within the common range if it is around 100. But the p-values of each feature was not significant except for two; Blood_Pressure_Stability.stable(0.388) and Internal_Temp_Stability.stable(0.411). I also looked at coefficients values and most of them were negative. ¡°Null Deviance¡± and ¡°Residual Deviance¡± values were 77.346 and 70.244 respectively. Those values show the lack of fitting of the model, but it would be meaningful to when compared with the same values from other trials of Logistic Regression. Therefore, in this case, I will take numeric metrics scores from confusion matrix for comparison among different classification algorithms.
+
+
+- Scale ¡°Comfort¡± feature of test data set before predicting 
+
+- Set test data set prediction
+
+- Calculate Confusion Metrix
+
+- Compute metrics scores
+
+I had to round up and even conver the test_pred value to factor for setting the level comparable to reference value. During the process, I had to debug my note pc for version issue of Rstudio, and was able to come up with the complicated code only worked. 
+```{r}
+# Test Set Prediction
+test_x$Comfort <- rescale(test$Comfort, to=c(0,1))
+test_pred <- predict(log_model, test_x, type = "response")
+test_pred
+# Confusion Matrix
+test_pred_fact <- factor(ifelse(test_pred<0.5,"A","S"),levels=levels(test_y$Discharge_Decision))
+confusionMatrix(test_pred_fact, test_y$Discharge_Decision)
+# Precision score
+CM <- confusionMatrix(test_pred_fact, test_y$Discharge_Decision)
+# Get numeric metrics scores 
+CM$byClass
+# Receiver Operating Characteristic (ROC) Curve
+pred_ROC <- prediction(test_x$Surface_Temp.high, test_y)
+roc <- performance(pred_ROC, measure = "tpr", x.measure = "fpr")
+plot(roc, main = "ROC Curve", colorize = T)
+#abline(a = 0, b = 1)
+# Area Under ROC curve (AUC) value
+auc <- performance(pred_ROC, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+The accuracy of Logistic Regression model was 0.6667 with 0.7705 of p-value. This means from Logistic Regression, I can classify a patient to be admitted or to be sent to home after surgery with 66.6% of accuracy. Sensitivity is 0.8 which presents 8 patients out of 10 were properly admitted, and specificity is 0.33 describing only 3 patients out of 10 were sent home correctly. 
+
+The Receiver Operating Characteristic (ROC) Curve is calculated with sensitive (true positive) value as x-axis and specificity (false positive) value as y-axis. And for Area Under ROC curve (AUC), there are standardized categories as below:
+
+¤ý0.9 ~ 1.0: Excellent
+
+¤ý0.8 ~ 0.9: Good
+
+¤ý0.7 ~ 0.8: Fair
+
+¤ý0.6 ~ 0.7: Poor
+
+¤ý0.5 ~ 0.6: Fail
+
+As a result, the AUC value from the model was 0.5167, and can be considered not meaningful. While Logistic Regression is used to predict a binary outcome, as stated several times, it may be hard to generate meaningful result from dummy variables. Also, the number of observations of the data set was only 87, relatively small. 
+
+b. Support Vector Machine (SVM)
+I learned that SVM is flexible model which can handle any shape of data set including linear, radial, and polynomial.6[http://dataaspirant.com/2017/01/19/support-vector-machine-classifier-implementation-r-caret-package/] As my data set is non-linear and scattered without patterns as well as small sized, I expect that SVM would better fit.
+
+- Convert outcome variable as factor before train SVM
+
+- Perform SVM using ¡®svmLinear¡¯ parameter of ¡®caret¡¯ package, took ¡®boot¡¯ as resampling method, and with 10 number of resampling iterations.
+```{r}
+# Convert outcome variable as factor 
+train_svm <- train_sc
+train_svm$Discharge_Decision <- as.factor(train_sc$Discharge_Decision)
+typeof(train_svm$Discharge_Decision)
+# Perform SVM using ¡®svmLinear¡¯ parameter 
+trctrl <- trainControl(method = "boot", number = 10)
+svm_Linear <- train(Discharge_Decision ~., data = train_svm, method = "svmLinear",
+                    trControl=trctrl, scale = FALSE)
+svm_Linear
+```
+The accuracy on the training data set ranged from 0.55 to 0.67. The tuning parameter ¡®C¡¯ is set as 1 as default as it is a linear model. However, the result shows the data set is not linear. Based on that, test set prediction would present less accuracy score.
+
+- Analyze parameters that I used
+
+I tried training data set with ¡®repeatedcv¡¯ parameter, and the accuracy score improved constantly showing 0.70, and kappa value went up from negative 0.1478 to negative 0.0380.
+```{r}
+# Perform SVM using ¡®repeatedcv¡¯ parameter 
+trctrl_rcv <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+svm_Linear <- train(Discharge_Decision ~., data = train_svm, method = "svmLinear",
+                    trControl=trctrl_rcv, scale = FALSE)
+svm_Linear
+```
+
+
+As a result, I got better accuracy (0.7143) from SVM than Logistic Regression (0.6667). The p-value went down to 0.2207 from 0.7705, which means the result is more meaningful, however, the result still within not significant range. Sensitivity score went up to 0.9333 from 0.8000, and specificity went down to 0.1667 from 0.3333. This means more patients admitted and sent home properly. 
+```{r}
+# Test Set Prediction
+test_pred_svm <- predict(svm_Linear, test_x)
+test_pred_svm
+
+# Confusion Matrix
+confusionMatrix(test_pred_svm, test_y$Discharge_Decision)
+
+# Create prediction vect_y
+test_pred_results <- ifelse(test_pred_svm == "A", 1, 0)
+test_pred_results
+
+pred <- prediction(test_pred_results, test_y)
+
+# Precision score
+CM <- confusionMatrix(test_pred_svm, test_y$Discharge_Decision)
+CM$byClass
+
+# ROC Curve
+roc <- performance(pred, "tpr", "fpr")
+plot(roc)
+
+# AUC
+auc.tmp <- performance(pred, "auc")
+auc <- as.numeric(auc.tmp@y.values)
+auc
+```
+
+- Grid search
+
+To improve the fit of model, I kept parameter as ¡®repeatedcv¡¯, and conducted grid search. By using expand.grid) function, I calculated optimal C value out of range from 0.01 though 5.0, and got 0.1 for the best value for C. 
+```{r}
+grid <- expand.grid(C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,5))
+
+svm_Linear_Grid <- train(Discharge_Decision ~., data = train_svm, method = "svmLinear",
+                    trControl=trctrl_rcv,
+                    preProcess = c("center"),
+                    tuneGrid = grid,
+                    tuneLength = 10)
+svm_Linear_Grid
+plot(svm_Linear_Grid)
+```
+
+Updating C value as 0.1 didn`t improve accuracy, but even reduced p-value further to 0.0412 from 0.2207, where the result can be considered significant. Moreover, the AUC value went up to 0.5 from 0.45.
+```{r}
+# Test Set Grid Prediction
+test_pred_grid <- predict(svm_Linear_Grid, newdata = test_x)
+test_pred_grid
+
+# Confusion Matrix
+confusionMatrix(test_pred_grid, test_y$Discharge_Decision)
+
+# Create prediction vect_y
+test_pred_grid_results <- ifelse(test_pred_grid == "A", 1, 0)
+test_pred_grid_results
+
+pred_grid <- prediction(test_pred_grid_results, test_y)
+
+# Precision score
+CM_grid <- confusionMatrix(test_pred_grid, test_y$Discharge_Decision)
+CM_grid$byClass
+
+# ROC Curve
+roc <- performance(pred_grid, "tpr", "fpr")
+plot(roc)
+
+# AUC
+auc.tmp <- performance(pred_grid, "auc")
+auc <- as.numeric(auc.tmp@y.values)
+auc
+```
+
+I applied non-linear SVM method with parameter, ¡®svmRadial¡¯, and conducted the same grid search. Then I applied C = 0.25 and fit the model again. Unfortunately, the new approach didn`t bring better fit results, which explains the data is not affected in applying linear or non-linear SVM algorithms. 
+```{r}
+svm_Radial <- train(Discharge_Decision ~., data = train_svm, method = "svmRadial",
+  trControl=trctrl_rcv,
+  preProcess = c("center"),
+  tuneLength = 10)
+svm_Radial
+plot(svm_Radial)
+```
+
+```{r}
+grid_radial <- expand.grid(sigma = c(0.01, 0.02, 0.025, 0.03, 0.04,
+ 0.05, 0.06, 0.07,0.08, 0.09, 0.1, 0.25, 0.5, 0.75,0.9),
+ C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75,
+ 1, 1.5, 2,5))
+svm_Radial_Grid <- train(Discharge_Decision ~., data = train_svm, method = "svmRadial",
+                    trControl=trctrl_rcv,
+                    preProcess = c("center"),
+                    tuneGrid = grid_radial,
+                    tuneLength = 10)
+svm_Radial_Grid
+plot(svm_Radial_Grid)
+```
+
+```{r}
+# Test Set Grid Prediction
+test_pred_Radial_Grid <- predict(svm_Radial_Grid, newdata = test_x)
+test_pred_Radial_Grid
+
+# Confusion Matrix
+confusionMatrix(test_pred_Radial_Grid, test_y$Discharge_Decision)
+
+# Create prediction vect_y
+test_pred_Radial_grid_results <- ifelse(test_pred_Radial_Grid == "A", 1, 0)
+test_pred_Radial_grid_results
+
+pred_Radial_grid <- prediction(test_pred_Radial_grid_results, test_y)
+
+# Precision score
+CM_Radial_grid <- confusionMatrix(test_pred_Radial_Grid, test_y$Discharge_Decision)
+CM_Radial_grid$byClass
+
+# ROC Curve
+roc <- performance(pred_Radial_grid, "tpr", "fpr")
+plot(roc)
+
+# AUC
+auc.tmp <- performance(pred_Radial_grid, "auc")
+auc <- as.numeric(auc.tmp@y.values)
+auc
+```
+Overall, even though there are not critical differences in terms of fitting models between Logistic Regression and SVM, SVM with parameters of ¡®svmLinear¡¯ with ¡®repeatedcv¡¯ provided the best result. Given that the accuracy, sensitivity, and specificity scores are similar, lower p-value and better AUC score adds more robust points to the model. 
+
+I also considered K Nearest Neighbor (KNN) algorithm for the data set as it doesn`t require particular assumptions about data set and versatile. However, considering the data set is quite small size and the KNN can be affected noise or irrelevant features and scale of data, I speculated it may not be suitable for dominantly consisted with dummy variables from categorial data.
+
+
+
+
+
